@@ -141,7 +141,7 @@ if mode == "📷 Upload image":
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Image originale")
-            st.image(img_pil, use_container_width=True)
+            st.image(img_np, use_column_width=True)
 
         with st.spinner("🔍 Détection en cours..."):
             t0 = time.time()
@@ -152,7 +152,7 @@ if mode == "📷 Upload image":
 
         with col2:
             st.subheader(f"Résultat — {len(detections)} détection(s)")
-            st.image(img_result, use_container_width=True)
+            st.image(img_result, use_column_width=True)
 
         # Métriques
         st.divider()
