@@ -36,7 +36,7 @@ def load_model(model_path):
 
 # ─── Prédiction sur frame numpy RGB ──────────────────────────────────────────
 def predict_frame(model, image_np, conf_threshold, box_thickness=6, font_scale=1.4):
-    results  = model.predict(image_np, conf=conf_threshold, verbose=False)
+    results = model.predict(image_np, conf=conf_threshold, imgsz=320, verbose=False)
     result   = results[0]
     img_draw = image_np.copy()
     detections   = []
@@ -220,16 +220,18 @@ elif mode == "🎥 Vidéo en direct (webcam)":
 
     class VideoProcessor(VideoProcessorBase):
         def __init__(self):
-            self.last_time = time.time()
-            self.fps = 0
+            self.frame_count = 0
 
         def recv(self, frame):
             img = frame.to_ndarray(format="bgr24")
+            self.frame_count += 1
 
-            # 🔁 Convertir en RGB pour YOLO
+            # 🔥 TRAITER 1 FRAME SUR 3
+            if self.frame_count % 3 != 0:
+                return av.VideoFrame.from_ndarray(img, format="bgr24")
+
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-            # 🔍 Détection YOLO
             img_out, detections, class_counts = predict_frame(
                 model,
                 img_rgb,
@@ -238,30 +240,20 @@ elif mode == "🎥 Vidéo en direct (webcam)":
                 font_scale
             )
 
-            # 🔁 Reconvertir en BGR pour affichage
             img_out = cv2.cvtColor(img_out, cv2.COLOR_RGB2BGR)
-
-            # 📊 Calcul FPS
-            current_time = time.time()
-            self.fps = 1 / (current_time - self.last_time)
-            self.last_time = current_time
-
-            # 🖊 Overlay FPS
-            cv2.putText(
-                img_out,
-                f"FPS: {self.fps:.1f}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2
-            )
 
             return av.VideoFrame.from_ndarray(img_out, format="bgr24")
 
     webrtc_streamer(
         key="webcam-yolo",
         video_processor_factory=VideoProcessor,
-        media_stream_constraints={"video": True, "audio": False},
+        media_stream_constraints={
+            "video": {
+                "width": 640,
+                "height": 480,
+                "frameRate": 15
+            },
+            "audio": False
+        },
         async_processing=True,
     )
