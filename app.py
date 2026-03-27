@@ -1,11 +1,9 @@
 import streamlit as st
-import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 import os
 import time
-import sys
 import io
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -19,14 +17,14 @@ st.set_page_config(
 
 # ─── Couleurs par classe (RGB) ────────────────────────────────────────────────
 CLASS_COLORS = {
-    'boisson_energetique' : (231, 76,  60),
-    'dessert'             : (243, 156, 18),
-    'eau'                 : (52,  152, 219),
-    'fromage'             : (241, 196, 15),
-    'jus'                 : (230, 126, 34),
-    'lait'                : (189, 195, 199),
-    'soda'                : (233, 30,  99),
-    'yaourt'              : (155, 89,  182),
+    'boisson_energetique': (231, 76, 60),
+    'dessert': (243, 156, 18),
+    'eau': (52, 152, 219),
+    'fromage': (241, 196, 15),
+    'jus': (230, 126, 34),
+    'lait': (189, 195, 199),
+    'soda': (233, 30, 99),
+    'yaourt': (155, 89, 182),
 }
 
 # ─── Chargement modèle (cache) ────────────────────────────────────────────────
@@ -34,46 +32,53 @@ CLASS_COLORS = {
 def load_model(model_path):
     return YOLO(model_path)
 
-# ─── Prédiction sur frame numpy RGB ──────────────────────────────────────────
-def predict_frame(model, image_np, conf_threshold, box_thickness=6, font_scale=1.4):
-    results  = model.predict(image_np, conf=conf_threshold, verbose=False)
-    result   = results[0]
-    img_draw = image_np.copy()
-    detections   = []
+# ─── Prédiction avec PIL (sans OpenCV) ────────────────────────────────────────
+def predict_frame_pil(model, image_pil, conf_threshold, box_thickness=6, font_scale=1.4):
+    """Prédiction avec dessin PIL (compatible Streamlit Cloud)"""
+    
+    results = model.predict(image_pil, conf=conf_threshold, verbose=False)
+    result = results[0]
+    
+    # Copier l'image pour dessiner
+    img_draw = image_pil.copy()
+    draw = ImageDraw.Draw(img_draw)
+    
+    detections = []
     class_counts = {}
 
     if result.boxes is not None and len(result.boxes) > 0:
         for box in result.boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
-            cls_id   = int(box.cls[0].cpu())
+            cls_id = int(box.cls[0].cpu())
             conf_val = float(box.conf[0].cpu())
             cls_name = result.names[cls_id]
-            color    = CLASS_COLORS.get(cls_name, (255, 255, 255))
-            bgr      = (color[2], color[1], color[0])
-
-            # ─── Box TRÈS épaisse ───────────────────────────────────────────
-            cv2.rectangle(img_draw, (x1, y1), (x2, y2), bgr, box_thickness)
+            color = CLASS_COLORS.get(cls_name, (255, 255, 255))
             
-            # ─── Texte TRÈS grand ───────────────────────────────────────────
+            # Dessiner le rectangle
+            draw.rectangle([(x1, y1), (x2, y2)], outline=color, width=box_thickness)
+            
+            # Texte
             label = f"{cls_name} {conf_val:.2f}"
-            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 4)
             
-            # Fond texte TRÈS grand
-            cv2.rectangle(img_draw, (x1, y1 - th - 25), (x1 + tw + 20, y1), bgr, -1)
+            # Taille du texte (approximative)
+            font_size = int(16 * font_scale)
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+            except:
+                font = ImageFont.load_default()
             
-            # Contour noir épais autour du texte
-            cv2.putText(img_draw, label, (x1 + 10, y1 - 12),
-                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), 6)
+            # Fond du texte
+            bbox = draw.textbbox((x1, y1), label, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
             
-            # Texte blanc par-dessus
-            cv2.putText(img_draw, label, (x1 + 10, y1 - 12),
-                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 3)
-
+            draw.rectangle([(x1, y1 - text_height - 10), (x1 + text_width + 10, y1)], fill=color)
+            draw.text((x1 + 5, y1 - text_height - 5), label, fill=(255, 255, 255), font=font)
+            
             detections.append({'classe': cls_name, 'confiance': round(conf_val, 3)})
             class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
 
     return img_draw, detections, class_counts
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
@@ -82,14 +87,9 @@ with st.sidebar:
     st.header("⚙️ Configuration")
 
     model_path = os.path.join(os.path.dirname(__file__), "best.pt")
-
-    conf_threshold = st.slider(
-        "Seuil de confiance", 0.10, 0.90, 0.25, 0.05
-    )
-
-    box_thickness = st.slider("Épaisseur des contours", 2, 12, 6)  # ← 6 par défaut
-    
-    font_scale = st.slider("Taille du texte", 0.8, 2.0, 1.4, 0.1)  # ← 1.4 par défaut
+    conf_threshold = st.slider("Seuil de confiance", 0.10, 0.90, 0.25, 0.05)
+    box_thickness = st.slider("Épaisseur des contours", 2, 12, 6)
+    font_scale = st.slider("Taille du texte", 0.8, 2.0, 1.4, 0.1)
 
     st.divider()
     st.markdown("**Légende des classes**")
@@ -109,7 +109,7 @@ st.markdown("Détection multi-objets par famille de produits — **YOLOv8s**")
 
 # ─── Chargement modèle ────────────────────────────────────────────────────────
 if not os.path.exists(model_path):
-    st.error(f"❌ Modèle introuvable : `{model_path}`  \nVérifiez le chemin dans la sidebar.")
+    st.error(f"❌ Modèle introuvable : `{model_path}`")
     st.stop()
 
 model = load_model(model_path)
@@ -136,7 +136,6 @@ if mode == "📷 Upload image":
 
     if uploaded:
         img_pil = Image.open(uploaded).convert("RGB")
-        img_np  = np.array(img_pil)
 
         col1, col2 = st.columns(2)
         with col1:
@@ -145,8 +144,8 @@ if mode == "📷 Upload image":
 
         with st.spinner("🔍 Détection en cours..."):
             t0 = time.time()
-            img_result, detections, class_counts = predict_frame(
-                model, img_np, conf_threshold
+            img_result, detections, class_counts = predict_frame_pil(
+                model, img_pil, conf_threshold, box_thickness, font_scale
             )
             latency_ms = (time.time() - t0) * 1000
 
@@ -171,10 +170,10 @@ if mode == "📷 Upload image":
             for cls, cnt in sorted(class_counts.items(), key=lambda x: -x[1]):
                 confs = [d['confiance'] for d in detections if d['classe'] == cls]
                 rows.append({
-                    'Classe'     : cls,
-                    'Instances'  : cnt,
-                    'Conf. moy.' : f"{np.mean(confs):.2f}",
-                    'Conf. max.' : f"{max(confs):.2f}",
+                    'Classe': cls,
+                    'Instances': cnt,
+                    'Conf. moy.': f"{np.mean(confs):.2f}",
+                    'Conf. max.': f"{max(confs):.2f}",
                 })
 
             with col_a:
@@ -184,8 +183,8 @@ if mode == "📷 Upload image":
             with col_b:
                 fig, ax = plt.subplots(figsize=(5, max(2, len(rows) * 0.5)))
                 classes_list = [r['Classe'] for r in rows]
-                counts_list  = [r['Instances'] for r in rows]
-                colors_hex   = [
+                counts_list = [r['Instances'] for r in rows]
+                colors_hex = [
                     "#{:02x}{:02x}{:02x}".format(*CLASS_COLORS.get(c, (100, 100, 100)))
                     for c in classes_list
                 ]
@@ -200,7 +199,7 @@ if mode == "📷 Upload image":
         # Téléchargement
         st.divider()
         buf = io.BytesIO()
-        Image.fromarray(img_result).save(buf, format="PNG")
+        img_result.save(buf, format="PNG")
         st.download_button(
             "💾 Télécharger le résultat",
             data=buf.getvalue(),
@@ -209,74 +208,8 @@ if mode == "📷 Upload image":
         )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MODE 2 — WEBCAM LIVE
+# MODE 2 — WEBCAM LIVE (désactivé sur cloud)
 # ══════════════════════════════════════════════════════════════════════════════
 elif mode == "🎥 Vidéo en direct (webcam)":
-
-    st.info("📹 Pointez la webcam vers un rayon — détection en temps réel.")
-
-    col_video, col_stats = st.columns([3, 1])
-
-    with col_stats:
-        st.markdown("### 📊 Stats live")
-        ph_fps     = st.empty()
-        ph_objects = st.empty()
-        ph_classes = st.empty()
-        st.divider()
-        stop = st.button("⏹️ Arrêter la caméra", type="primary", use_container_width=True)
-
-    with col_video:
-        ph_frame = st.empty()
-
-    cap = cv2.VideoCapture(0)
-
-    if not cap.isOpened():
-        st.error("❌ Webcam introuvable. Vérifiez que votre caméra est connectée et non utilisée par une autre application.")
-        st.stop()
-
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-    fps_count = 0
-    fps_start = time.time()
-    fps_val   = 0.0
-
-    while not stop:
-        ret, frame = cap.read()
-        if not ret:
-            st.warning("⚠️ Impossible de lire le flux.")
-            break
-
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame_out, detections, class_counts = predict_frame(
-            model, frame_rgb, conf_threshold
-        )
-
-        # Calcul FPS
-        fps_count += 1
-        elapsed = time.time() - fps_start
-        if elapsed >= 1.0:
-            fps_val   = fps_count / elapsed
-            fps_count = 0
-            fps_start = time.time()
-
-        # Overlay FPS
-        cv2.putText(
-            frame_out,
-            f"FPS: {fps_val:.1f}   conf >= {conf_threshold}",
-            (12, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.85,
-            (255, 255, 255), 2
-        )
-
-        ph_frame.image(frame_out, use_container_width=True)
-        ph_fps.metric("FPS", f"{fps_val:.1f}")
-        ph_objects.metric("Objets", len(detections))
-
-        classes_md = "\n".join(
-            f"**{cls}** : {cnt}"
-            for cls, cnt in sorted(class_counts.items(), key=lambda x: -x[1])
-        ) or "_Aucune détection_"
-        ph_classes.markdown(classes_md)
-
-    cap.release()
-    st.success("✅ Webcam arrêtée.")
+    st.warning("⚠️ La webcam n'est pas disponible sur Streamlit Cloud.")
+    st.info("📱 Utilisez l'application localement pour la détection en temps réel, ou upload une image.")
