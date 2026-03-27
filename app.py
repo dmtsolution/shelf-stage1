@@ -207,3 +207,61 @@ if mode == "📷 Upload image":
             file_name="detection_result.png",
             mime="image/png"
         )
+    
+# ══════════════════════════════════════════════════════════════════════════════
+# MODE 2 — WEBCAM (WEBRTC)
+# ══════════════════════════════════════════════════════════════════════════════
+elif mode == "🎥 Vidéo en direct (webcam)":
+
+    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+    import av
+
+    st.info("📹 Webcam active — détection en temps réel (WebRTC)")
+
+    class VideoProcessor(VideoProcessorBase):
+        def __init__(self):
+            self.last_time = time.time()
+            self.fps = 0
+
+        def recv(self, frame):
+            img = frame.to_ndarray(format="bgr24")
+
+            # 🔁 Convertir en RGB pour YOLO
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            # 🔍 Détection YOLO
+            img_out, detections, class_counts = predict_frame(
+                model,
+                img_rgb,
+                conf_threshold,
+                box_thickness,
+                font_scale
+            )
+
+            # 🔁 Reconvertir en BGR pour affichage
+            img_out = cv2.cvtColor(img_out, cv2.COLOR_RGB2BGR)
+
+            # 📊 Calcul FPS
+            current_time = time.time()
+            self.fps = 1 / (current_time - self.last_time)
+            self.last_time = current_time
+
+            # 🖊 Overlay FPS
+            cv2.putText(
+                img_out,
+                f"FPS: {self.fps:.1f}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (255, 255, 255),
+                2
+            )
+
+            return av.VideoFrame.from_ndarray(img_out, format="bgr24")
+
+    webrtc_streamer(
+        key="webcam-yolo",
+        video_processor_factory=VideoProcessor,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
