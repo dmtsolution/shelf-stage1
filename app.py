@@ -8,6 +8,9 @@ import io
 import pandas as pd
 import matplotlib.pyplot as plt
 
+# Désactiver l'import OpenCV dans ultralytics
+os.environ["ULTRALYTICS_NO_OPENCV"] = "1"
+
 # ─── Configuration page ───────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Shelf Recognition — Stage 1",
@@ -32,14 +35,11 @@ CLASS_COLORS = {
 def load_model(model_path):
     return YOLO(model_path)
 
-# ─── Prédiction avec PIL (sans OpenCV) ────────────────────────────────────────
+# ─── Prédiction avec PIL ──────────────────────────────────────────────────────
 def predict_frame_pil(model, image_pil, conf_threshold, box_thickness=6, font_scale=1.4):
-    """Prédiction avec dessin PIL (compatible Streamlit Cloud)"""
-    
     results = model.predict(image_pil, conf=conf_threshold, verbose=False)
     result = results[0]
     
-    # Copier l'image pour dessiner
     img_draw = image_pil.copy()
     draw = ImageDraw.Draw(img_draw)
     
@@ -54,24 +54,24 @@ def predict_frame_pil(model, image_pil, conf_threshold, box_thickness=6, font_sc
             cls_name = result.names[cls_id]
             color = CLASS_COLORS.get(cls_name, (255, 255, 255))
             
-            # Dessiner le rectangle
+            # Rectangle
             draw.rectangle([(x1, y1), (x2, y2)], outline=color, width=box_thickness)
             
             # Texte
             label = f"{cls_name} {conf_val:.2f}"
+            font_size = max(20, int(24 * font_scale))
             
-            # Taille du texte (approximative)
-            font_size = int(16 * font_scale)
             try:
                 font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
             except:
                 font = ImageFont.load_default()
             
-            # Fond du texte
+            # Calcul taille texte
             bbox = draw.textbbox((x1, y1), label, font=font)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
             
+            # Fond
             draw.rectangle([(x1, y1 - text_height - 10), (x1 + text_width + 10, y1)], fill=color)
             draw.text((x1 + 5, y1 - text_height - 5), label, fill=(255, 255, 255), font=font)
             
@@ -110,6 +110,7 @@ st.markdown("Détection multi-objets par famille de produits — **YOLOv8s**")
 # ─── Chargement modèle ────────────────────────────────────────────────────────
 if not os.path.exists(model_path):
     st.error(f"❌ Modèle introuvable : `{model_path}`")
+    st.info("💡 Placez votre fichier `best.pt` dans le dossier de l'application.")
     st.stop()
 
 model = load_model(model_path)
@@ -119,97 +120,88 @@ st.divider()
 # ─── Choix du mode ────────────────────────────────────────────────────────────
 mode = st.radio(
     "Choisissez le mode d'analyse",
-    ["📷 Upload image", "🎥 Vidéo en direct (webcam)"],
+    ["📷 Upload image"],
     horizontal=True
 )
 st.divider()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MODE 1 — UPLOAD IMAGE
+# MODE — UPLOAD IMAGE
 # ══════════════════════════════════════════════════════════════════════════════
-if mode == "📷 Upload image":
+uploaded = st.file_uploader(
+    "Uploadez une photo de rayon (.jpg / .png)",
+    type=["jpg", "jpeg", "png"]
+)
 
-    uploaded = st.file_uploader(
-        "Uploadez une photo de rayon (.jpg / .png)",
-        type=["jpg", "jpeg", "png"]
-    )
+if uploaded:
+    img_pil = Image.open(uploaded).convert("RGB")
 
-    if uploaded:
-        img_pil = Image.open(uploaded).convert("RGB")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Image originale")
+        st.image(img_pil, use_container_width=True)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Image originale")
-            st.image(img_pil, use_container_width=True)
-
-        with st.spinner("🔍 Détection en cours..."):
-            t0 = time.time()
-            img_result, detections, class_counts = predict_frame_pil(
-                model, img_pil, conf_threshold, box_thickness, font_scale
-            )
-            latency_ms = (time.time() - t0) * 1000
-
-        with col2:
-            st.subheader(f"Résultat — {len(detections)} détection(s)")
-            st.image(img_result, use_container_width=True)
-
-        # Métriques
-        st.divider()
-        c1, c2, c3 = st.columns(3)
-        c1.metric("🎯 Objets détectés", len(detections))
-        c2.metric("📦 Classes présentes", len(class_counts))
-        c3.metric("⚡ Latence", f"{latency_ms:.1f} ms")
-
-        # Tableau + graphique
-        if class_counts:
-            st.divider()
-            st.subheader("Récapitulatif par classe")
-            col_a, col_b = st.columns([1, 1])
-
-            rows = []
-            for cls, cnt in sorted(class_counts.items(), key=lambda x: -x[1]):
-                confs = [d['confiance'] for d in detections if d['classe'] == cls]
-                rows.append({
-                    'Classe': cls,
-                    'Instances': cnt,
-                    'Conf. moy.': f"{np.mean(confs):.2f}",
-                    'Conf. max.': f"{max(confs):.2f}",
-                })
-
-            with col_a:
-                df = pd.DataFrame(rows)
-                st.dataframe(df, hide_index=True, use_container_width=True)
-
-            with col_b:
-                fig, ax = plt.subplots(figsize=(5, max(2, len(rows) * 0.5)))
-                classes_list = [r['Classe'] for r in rows]
-                counts_list = [r['Instances'] for r in rows]
-                colors_hex = [
-                    "#{:02x}{:02x}{:02x}".format(*CLASS_COLORS.get(c, (100, 100, 100)))
-                    for c in classes_list
-                ]
-                ax.barh(classes_list, counts_list, color=colors_hex, edgecolor='white')
-                ax.set_xlabel("Instances")
-                ax.set_title("Distribution des détections", fontweight='bold')
-                ax.grid(axis='x', alpha=0.3)
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close()
-
-        # Téléchargement
-        st.divider()
-        buf = io.BytesIO()
-        img_result.save(buf, format="PNG")
-        st.download_button(
-            "💾 Télécharger le résultat",
-            data=buf.getvalue(),
-            file_name="detection_result.png",
-            mime="image/png"
+    with st.spinner("🔍 Détection en cours..."):
+        t0 = time.time()
+        img_result, detections, class_counts = predict_frame_pil(
+            model, img_pil, conf_threshold, box_thickness, font_scale
         )
+        latency_ms = (time.time() - t0) * 1000
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MODE 2 — WEBCAM LIVE (désactivé sur cloud)
-# ══════════════════════════════════════════════════════════════════════════════
-elif mode == "🎥 Vidéo en direct (webcam)":
-    st.warning("⚠️ La webcam n'est pas disponible sur Streamlit Cloud.")
-    st.info("📱 Utilisez l'application localement pour la détection en temps réel, ou upload une image.")
+    with col2:
+        st.subheader(f"Résultat — {len(detections)} détection(s)")
+        st.image(img_result, use_container_width=True)
+
+    # Métriques
+    st.divider()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🎯 Objets détectés", len(detections))
+    c2.metric("📦 Classes présentes", len(class_counts))
+    c3.metric("⚡ Latence", f"{latency_ms:.1f} ms")
+
+    # Tableau + graphique
+    if class_counts:
+        st.divider()
+        st.subheader("Récapitulatif par classe")
+        col_a, col_b = st.columns([1, 1])
+
+        rows = []
+        for cls, cnt in sorted(class_counts.items(), key=lambda x: -x[1]):
+            confs = [d['confiance'] for d in detections if d['classe'] == cls]
+            rows.append({
+                'Classe': cls,
+                'Instances': cnt,
+                'Conf. moy.': f"{np.mean(confs):.2f}",
+                'Conf. max.': f"{max(confs):.2f}",
+            })
+
+        with col_a:
+            df = pd.DataFrame(rows)
+            st.dataframe(df, hide_index=True, use_container_width=True)
+
+        with col_b:
+            fig, ax = plt.subplots(figsize=(5, max(2, len(rows) * 0.5)))
+            classes_list = [r['Classe'] for r in rows]
+            counts_list = [r['Instances'] for r in rows]
+            colors_hex = [
+                "#{:02x}{:02x}{:02x}".format(*CLASS_COLORS.get(c, (100, 100, 100)))
+                for c in classes_list
+            ]
+            ax.barh(classes_list, counts_list, color=colors_hex, edgecolor='white')
+            ax.set_xlabel("Instances")
+            ax.set_title("Distribution des détections", fontweight='bold')
+            ax.grid(axis='x', alpha=0.3)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close()
+
+    # Téléchargement
+    st.divider()
+    buf = io.BytesIO()
+    img_result.save(buf, format="PNG")
+    st.download_button(
+        "💾 Télécharger le résultat",
+        data=buf.getvalue(),
+        file_name="detection_result.png",
+        mime="image/png"
+    )
