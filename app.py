@@ -42,7 +42,6 @@ def load_model():
         return None
 
 def letterbox(image_pil, new_shape=640, color=(114, 114, 114)):
-    """Redimensionne l'image avec padding (version PIL)"""
     width, height = image_pil.size
     shape = (height, width)
     
@@ -100,7 +99,7 @@ def postprocess_output(output, dw, dh, scale, conf_threshold=0.25):
         boxes = np.array(boxes)
         scores = np.array(scores)
         
-        indices = np.argsort(scores)[::-1]
+        indices = np.argsort(scores)[::-1].tolist()
         
         keep = []
         while len(indices) > 0:
@@ -111,7 +110,8 @@ def postprocess_output(output, dw, dh, scale, conf_threshold=0.25):
                 break
             
             box_i = boxes[i]
-            rest_boxes = boxes[indices[1:]]
+            rest_indices = indices[1:]
+            rest_boxes = boxes[rest_indices]
             
             x1 = np.maximum(box_i[0], rest_boxes[:, 0])
             y1 = np.maximum(box_i[1], rest_boxes[:, 1])
@@ -127,13 +127,14 @@ def postprocess_output(output, dw, dh, scale, conf_threshold=0.25):
             
             iou = inter / (area_i + area_rest - inter + 1e-6)
             
-            indices = indices[1:][iou < 0.45]
+            keep_indices = iou < 0.45
+            indices = [rest_indices[j] for j in range(len(rest_indices)) if keep_indices[j]]
         
         return boxes[keep], scores[keep], [class_ids[i] for i in keep]
     
     return [], [], []
 
-# ─── Sidebar avec légende des classes ─────────────────────────────────────────
+# Sidebar
 with st.sidebar:
     st.header("⚙️ Configuration")
     conf_threshold = st.slider("Seuil de confiance", 0.10, 0.90, 0.25, 0.05)
@@ -150,7 +151,6 @@ with st.sidebar:
             unsafe_allow_html=True
         )
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
 st.title("🛒 Shelf Recognition — Stage 1")
 st.markdown("Détection multi-objets par famille de produits — **YOLOv8s (ONNX)**")
 
@@ -161,7 +161,6 @@ if model is None:
 st.success("✅ Modèle ONNX chargé")
 st.divider()
 
-# Upload
 uploaded = st.file_uploader("Uploadez une photo de rayon", type=["jpg", "jpeg", "png"])
 
 if uploaded:
@@ -183,7 +182,6 @@ if uploaded:
         
         latency_ms = (time.time() - t0) * 1000
 
-    # Dessiner les résultats
     img_result = orig_img.copy()
     draw = ImageDraw.Draw(img_result)
     
@@ -195,11 +193,9 @@ if uploaded:
         cls_name = CLASS_NAMES[cls_id] if cls_id < len(CLASS_NAMES) else f"classe_{cls_id}"
         color = CLASS_COLORS.get(cls_name, (255, 255, 255))
         
-        # Rectangle épais
         for i in range(box_thickness):
             draw.rectangle([(x1+i, y1+i), (x2-i, y2-i)], outline=color)
         
-        # Texte
         label = f"{cls_name} {score:.2f}"
         font_size = int(28 * font_scale)
         try:
@@ -207,7 +203,6 @@ if uploaded:
         except:
             font = ImageFont.load_default()
         
-        # Fond texte
         bbox = draw.textbbox((x1, y1), label, font=font)
         text_w = bbox[2] - bbox[0]
         text_h = bbox[3] - bbox[1]
@@ -221,14 +216,12 @@ if uploaded:
         st.subheader(f"Résultat — {len(detections)} détection(s)")
         st.image(img_result, use_container_width=True)
 
-    # Métriques
     st.divider()
     c1, c2, c3 = st.columns(3)
     c1.metric("🎯 Objets détectés", len(detections))
     c2.metric("📦 Classes présentes", len(class_counts))
     c3.metric("⚡ Latence", f"{latency_ms:.1f} ms")
 
-    # Tableau récapitulatif
     if class_counts:
         st.divider()
         st.subheader("📊 Récapitulatif par classe")
@@ -264,7 +257,6 @@ if uploaded:
             st.pyplot(fig)
             plt.close()
 
-    # Téléchargement
     st.divider()
     buf = io.BytesIO()
     img_result.save(buf, format="PNG")
